@@ -27,16 +27,14 @@ def get_int_value_default(_config: dict, _key, default):
     return int(_config.get(_key))
 
 
-# 获取当前时间对应的最大和最小步数
+# 获取最大和最小步数
+# 修改说明：原版会按当前时间线性放大范围（越晚步数越多），
+# 一旦定时任务被 GitHub 延迟到深夜/凌晨执行，步数就会被压到只有两三千。
+# 这里改为始终使用 CONFIG 中配置的完整范围。
 def get_min_max_by_time(hour=None, minute=None):
-    if hour is None:
-        hour = time_bj.hour
-    if minute is None:
-        minute = time_bj.minute
-    time_rate = min((hour * 60 + minute) / (22 * 60), 1)
     min_step = get_int_value_default(config, 'MIN_STEP', 18000)
     max_step = get_int_value_default(config, 'MAX_STEP', 25000)
-    return int(time_rate * min_step), int(time_rate * max_step)
+    return min_step, max_step
 
 
 # 虚拟ip地址
@@ -188,8 +186,11 @@ class MiMotionRunner:
         if app_token is None:
             return "登陆失败！", False
 
-        step = str(random.randint(min_step, max_step))
-        self.log_str += f"已设置为随机步数范围({min_step}~{max_step}) 随机值:{step}\n"
+        # 修改说明：同一天、同一账号固定为同一个步数。
+        # 原版每次执行都重新随机，一天内多次执行会导致步数忽大忽小、互相覆盖。
+        _daily_rnd = random.Random('%s-%s' % (self.user, time_bj.strftime('%Y%m%d')))
+        step = str(_daily_rnd.randint(min_step, max_step))
+        self.log_str += f"当天步数范围({min_step}~{max_step}) 本次值:{step}\n"
         
         user_token_info = user_tokens.get(self.user, {})
         bound_device_id = user_token_info.get("bound_device_id")
