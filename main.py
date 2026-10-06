@@ -225,9 +225,15 @@ def _parse_bark_key(raw):
 
 def push_bark(title, content):
     """Bark 推送到 iPhone，免费、无需注册，装个 App 就有推送地址"""
+    # 注意：BARK_KEY 是在仓库 Secret 的 CONFIG 里填的，
+    # 不需要、也不允许修改本文件的任何代码！
     raw = config.get('BARK_KEY')
     if not raw or raw == 'NO':
         print('未配置 BARK_KEY 跳过 Bark 推送')
+        return
+    if any(c in raw for c in (' ', '\n', '\r', '\t')):
+        print('BARK_KEY 填错了：这里只填推送地址（如 https://api.day.app/xxxxxxxx）'
+              '或纯 device key，不要粘贴 curl 命令，已跳过 Bark 推送')
         return
     server, key = _parse_bark_key(raw)
     if not key:
