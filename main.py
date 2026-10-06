@@ -11,6 +11,8 @@ import re
 import time
 import os
 
+import requests
+
 from util.aes_help import encrypt_data, decrypt_data
 import util.zepp_helper as zeppHelper
 import util.push_util as push_util
@@ -205,6 +207,97 @@ class MiMotionRunner:
         return f"修改步数（{step}）[" + msg + "]", ok
 
 
+# ================= 额外推送通道：Bark（iPhone） / 邮件 =================
+# 仓库自带的 pushplus / 企业微信 / telegram 依然可用，这里只是平行增加两条免费通道
+def _parse_bark_key(raw):
+    """支持两种填法：纯 key，或者完整推送地址 https://api.day.app/xxxxxxxx"""
+    raw = (raw or '').strip()
+    if not raw:
+        return None, None
+    if raw.startswith('http'):
+        from urllib.parse import urlparse
+        p = urlparse(raw)
+        server = '%s://%s' % (p.scheme, p.netloc)
+        key = p.path.strip('/').split('/')[0]
+        return server, key
+    return 'https://api.day.app', raw
+
+
+def push_bark(title, content):
+    """Bark 推送到 iPhone，免费、无需注册，装个 App 就有推送地址"""
+    raw = config.get('BARK_KEY')
+    if not raw or raw == 'NO':
+        print('未配置 BARK_KEY 跳过 Bark 推送')
+        return
+    server, key = _parse_bark_key(raw)
+    if not key:
+        print('BARK_KEY 格式不正确，跳过 Bark 推送')
+        return
+    server = (config.get('BARK_SERVER') or server).rstrip('/')
+    payload = {
+        'device_key': key,
+        'title': title,
+        'body': content,
+        'group': '刷步数',
+        'level': config.get('BARK_LEVEL') or 'active',
+        'isArchive': 1,
+    }
+    try:
+        resp = requests.post('%s/push' % server, json=payload, timeout=30)
+        if resp.status_code == 200 and resp.json().get('code') == 200:
+            print('Bark 推送成功')
+        else:
+            print('Bark 推送失败：%s %s' % (resp.status_code, resp.text[:200]))
+    except Exception as e:
+        print('Bark 推送异常：%s' % e)
+
+
+def push_email(title, content):
+    """邮件推送，全平台通用，最稳。QQ 邮箱需使用「授权码」而非登录密码"""
+    host = (config.get('EMAIL_HOST') or '').strip()
+    user = (config.get('EMAIL_USER') or '').strip()
+    password = (config.get('EMAIL_PASS') or '').strip()
+    if not (host and user and password):
+        print('未配置 EMAIL_HOST/EMAIL_USER/EMAIL_PASS 跳过邮件推送')
+        return
+    to_addr = (config.get('EMAIL_TO') or '').strip() or user
+    port = int(config.get('EMAIL_PORT') or 465)
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.header import Header
+        msg = MIMEText(content, 'plain', 'utf-8')
+        msg['Subject'] = Header(title, 'utf-8')
+        msg['From'] = user
+        msg['To'] = to_addr
+        if port == 465:
+            server = smtplib.SMTP_SSL(host, port, timeout=30)
+        else:
+            server = smtplib.SMTP(host, port, timeout=30)
+            try:
+                server.starttls()
+            except Exception:
+                pass
+        server.login(user, password)
+        server.sendmail(user, [to_addr], msg.as_string())
+        server.quit()
+        print('邮件推送成功 -> %s' % to_addr)
+    except Exception as e:
+        print('邮件推送异常：%s' % e)
+
+
+def push_extra(exec_results, summary):
+    """汇总后走额外通道推送"""
+    title = '%s 刷步数通知' % format_now()
+    lines = [summary.strip()]
+    for r in exec_results:
+        state = '成功' if r.get('success') is True else '失败'
+        lines.append('- %s %s：%s' % (desensitize_user_name(r.get('user', '')), state, r.get('msg')))
+    content = '\n'.join(lines)
+    push_bark(title, content)
+    push_email(title, content)
+
+
 def run_single_account(total, idx, user_mi, passwd_mi):
     idx_info = ""
     if idx is not None:
@@ -255,6 +348,7 @@ def execute():
         summary = f"\n执行账号总数{total}，成功：{success_count}，失败：{total - success_count}"
         print(summary)
         push_util.push_results(push_results, summary, push_config)
+        push_extra(push_results, summary)
     else:
         print(f"账号数长度[{len(user_list)}]和密码数长度[{len(passwd_list)}]不匹配，跳过执行")
         exit(1)
